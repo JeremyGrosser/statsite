@@ -1,0 +1,3 @@
+statsite usr/bin
+sinks usr/share/statsite
+debian/statsite.ini etc/statsite

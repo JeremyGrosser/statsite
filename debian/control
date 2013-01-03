@@ -1,0 +1,14 @@
+Source: statsite
+Section: admin
+Priority: extra
+Maintainer: Jeremy Grosser <jeremy@synack.me>
+Build-Depends: debhelper (>= 8.0.0), scons, python-support
+Standards-Version: 3.9.3
+Homepage: https://github.com/armon/statsite
+
+Package: statsite
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends}
+Description: C implementation of Etsy's statsd
+ This is a stats aggregation server. By default, Statsite flushes data to
+ Graphite. Statsite is based heavily on Etsy's StatsD.
