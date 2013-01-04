@@ -1,3 +1,9 @@
+statsite (0.3.4-1ubuntu1) precise; urgency=low
+
+  * Init script should background statsite 
+
+ -- Jeremy Grosser <jeremy@synack.me>  Fri, 04 Jan 2013 21:19:21 +0000
+
 statsite (0.3.4-1) precise; urgency=low
 
   * Initial release
