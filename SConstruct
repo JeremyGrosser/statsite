@@ -6,11 +6,15 @@ murmur = envmurmur.Library('murmur', Glob("deps/murmurhash/*.cpp"))
 envinih = Environment(CPATH = ['deps/inih/'], CFLAGS="-O3")
 inih = envinih.Library('inih', Glob("deps/inih/*.c"))
 
-env_statsite_with_err = Environment(CCFLAGS = '-std=c99 -D_GNU_SOURCE -Wall -Werror -O3 -pthread -Ideps/inih/ -Ideps/libev/ -Isrc/')
-env_statsite_without_err = Environment(CCFLAGS = '-std=c99 -D_GNU_SOURCE -O3 -pthread -Ideps/inih/ -Ideps/libev/ -Isrc/')
+env_statsite_with_err = Environment(CCFLAGS = '-g -std=c99 -D_GNU_SOURCE -Wall -Werror -O3 -pthread -Ideps/inih/ -Ideps/libev/ -Isrc/')
+env_statsite_without_err = Environment(CCFLAGS = '-g -std=c99 -D_GNU_SOURCE -O3 -pthread -Ideps/inih/ -Ideps/libev/ -Isrc/')
 
 objs = env_statsite_with_err.Object('src/hashmap', 'src/hashmap.c')           + \
         env_statsite_with_err.Object('src/heap', 'src/heap.c')                + \
+        env_statsite_with_err.Object('src/radix', 'src/radix.c')              + \
+        env_statsite_with_err.Object('src/hll_constants', 'src/hll_constants.c') + \
+        env_statsite_with_err.Object('src/hll', 'src/hll.c')                  + \
+        env_statsite_with_err.Object('src/set', 'src/set.c')                  + \
         env_statsite_with_err.Object('src/cm_quantile', 'src/cm_quantile.c')  + \
         env_statsite_with_err.Object('src/timer', 'src/timer.c')              + \
         env_statsite_with_err.Object('src/counter', 'src/counter.c')          + \

@@ -1,15 +1,19 @@
 #ifndef METRICS_H
 #define METRICS_H
 #include <stdint.h>
+#include "config.h"
+#include "radix.h"
 #include "counter.h"
 #include "timer.h"
 #include "hashmap.h"
+#include "set.h"
 
 typedef enum {
     UNKNOWN,
     KEY_VAL,
     COUNTER,
-    TIMER
+    TIMER,
+    SET
 } metric_type;
 
 typedef struct key_val {
@@ -19,12 +23,23 @@ typedef struct key_val {
 } key_val;
 
 typedef struct {
+    timer tm;
+
+    // Support for histograms
+    histogram_config *conf;
+    unsigned int *counts;
+} timer_hist;
+
+typedef struct {
     hashmap *counters;  // Hashmap of name -> counter structs
-    hashmap *timers;    // Map of name -> timer structs
+    hashmap *timers;    // Map of name -> timer_hist structs
+    hashmap *sets;      // Map of name -> set_t structs
     key_val *kv_vals;   // Linked list of key_val structs
-    double eps;         // The error for timers
+    double timer_eps;   // The error for timers
     double *quantiles;  // Array of quantiles
-    uint32_t num_quants;    // Size of quantiles array
+    uint32_t num_quants; // Size of quantiles array
+    radix_tree *histograms; // Radix tree with histogram configs
+    unsigned char set_precision; // The precision for sets
 } metrics;
 
 typedef int(*metric_callback)(void *data, metric_type type, char *name, void *val);
@@ -34,9 +49,12 @@ typedef int(*metric_callback)(void *data, metric_type type, char *name, void *va
  * @arg eps The maximum error for the quantiles
  * @arg quantiles A sorted array of double quantile values, must be on (0, 1)
  * @arg num_quants The number of entries in the quantiles array
+ * @arg histograms A radix tree with histogram settings. This is not owned
+ * by the metrics object. It is assumed to exist for the life of the metrics.
+ * @arg set_precision The precision to use for sets
  * @return 0 on success.
  */
-int init_metrics(double eps, double *quantiles, uint32_t num_quants, metrics *m);
+int init_metrics(double timer_eps, double *quantiles, uint32_t num_quants, radix_tree *histograms, unsigned char set_precision, metrics *m);
 
 /**
  * Initializes the metrics struct, with preset configurations.
@@ -60,6 +78,14 @@ int destroy_metrics(metrics *m);
  * @return 0 on success.
  */
 int metrics_add_sample(metrics *m, metric_type type, char *name, double val);
+
+/**
+ * Adds a value to a named set.
+ * @arg name The name of the set
+ * @arg value The value to add
+ * @return 0 on success
+ */
+int metrics_set_update(metrics *m, char *name, char *value);
 
 /**
  * Iterates through all the metrics
