@@ -88,6 +88,7 @@ struct statsite_networking {
     statsite_config *config;
     ev_io tcp_client;
     ev_io udp_client;
+    conn_info *stdin_client;
     ev_timer flush_timer;
 };
 
@@ -120,6 +121,10 @@ static int circbuf_write(circular_buffer *buf, char *in, uint64_t bytes);
  * @return 0 on success.
  */
 static int setup_tcp_listener(statsite_networking *netconf) {
+    if (netconf->config->tcp_port == 0) {
+        syslog(LOG_INFO, "TCP port is disabled");
+        return 0;
+    }
     struct sockaddr_in addr;
     struct in_addr bind_addr;
     bzero(&addr, sizeof(addr));
@@ -154,6 +159,9 @@ static int setup_tcp_listener(statsite_networking *netconf) {
         return 1;
     }
 
+    syslog(LOG_INFO, "Listening on tcp '%s:%d'",
+           netconf->config->bind_address, netconf->config->tcp_port);
+
     // Create the libev objects
     ev_io_init(&netconf->tcp_client, handle_new_client,
                 tcp_listener_fd, EV_READ);
@@ -167,6 +175,10 @@ static int setup_tcp_listener(statsite_networking *netconf) {
  * @return 0 on success.
  */
 static int setup_udp_listener(statsite_networking *netconf) {
+    if (netconf->config->udp_port == 0) {
+        syslog(LOG_INFO, "UDP port is disabled");
+        return 0;
+    }
     struct sockaddr_in addr;
     struct in_addr bind_addr;
     bzero(&addr, sizeof(addr));
@@ -196,6 +208,10 @@ static int setup_udp_listener(statsite_networking *netconf) {
         return 1;
     }
 
+    // Put the socket in non-blocking mode
+    int flags = fcntl(udp_listener_fd, F_GETFL, 0);
+    fcntl(udp_listener_fd, F_SETFL, flags | O_NONBLOCK);
+
     // Allocate a connection object for the UDP socket,
     // ensure a min-buffer size of 64K
     conn_info *conn = get_conn();
@@ -204,10 +220,37 @@ static int setup_udp_listener(statsite_networking *netconf) {
     }
     netconf->udp_client.data = conn;
 
+    syslog(LOG_INFO, "Listening on udp '%s:%d'.",
+           netconf->config->bind_address, netconf->config->udp_port);
+
     // Create the libev objects
     ev_io_init(&netconf->udp_client, handle_udp_message,
                 udp_listener_fd, EV_READ);
     ev_io_start(&netconf->udp_client);
+    return 0;
+}
+
+/**
+ * Initializes the stdin listener.
+ * @arg netconf The network configuration
+ * @return 0 on success.
+ */
+static int setup_stdin_listener(statsite_networking *netconf) {
+    if (!netconf->config->parse_stdin) {
+        syslog(LOG_INFO, "stdin is disabled");
+        return 0;
+    }
+
+    // Log we are listening
+    syslog(LOG_INFO, "Listening on stdin.");
+
+    // Create an associated conn object
+    conn_info *conn = get_conn();
+    netconf->stdin_client = conn;
+
+    // Initialize the libev stuff
+    ev_io_init(&conn->client, invoke_event_handler, STDIN_FILENO, EV_READ);
+    ev_io_start(&conn->client);
     return 0;
 }
 
@@ -238,8 +281,15 @@ int init_networking(statsite_config *config, statsite_networking **netconf_out) 
         return 1;
     }
 
+    // Setup the stdin listener
+    int res = setup_stdin_listener(netconf);
+    if (res != 0) {
+        free(netconf);
+        return 1;
+    }
+
     // Setup the TCP listener
-    int res = setup_tcp_listener(netconf);
+    res = setup_tcp_listener(netconf);
     if (res != 0) {
         free(netconf);
         return 1;
@@ -248,15 +298,13 @@ int init_networking(statsite_config *config, statsite_networking **netconf_out) 
     // Setup the UDP listener
     res = setup_udp_listener(netconf);
     if (res != 0) {
-        ev_io_stop(&netconf->tcp_client);
-        close(netconf->tcp_client.fd);
+        if ev_is_active(&netconf->tcp_client) {
+            ev_io_stop(&netconf->tcp_client);
+            close(netconf->tcp_client.fd);
+        }
         free(netconf);
         return 1;
     }
-
-    syslog(LOG_INFO, "Listening on tcp '%s:%d' udp '%s:%d'.",
-           netconf->config->bind_address, netconf->config->tcp_port,
-           netconf->config->bind_address, netconf->config->udp_port);
 
     // Setup the timer
     ev_timer_init(&netconf->flush_timer, handle_flush_event, config->flush_interval, config->flush_interval);
@@ -371,54 +419,56 @@ static int read_client_data(conn_info *conn) {
  * of what to do.
  */
 static void handle_udp_message(ev_io *watch, int ready_events) {
-    // Get the associated connection struct
-    conn_info *conn = watch->data;
+    while (1) {
+        // Get the associated connection struct
+        conn_info *conn = watch->data;
 
-    // Clear the input buffer
-    circbuf_clear(&conn->input);
+        // Clear the input buffer
+        circbuf_clear(&conn->input);
 
-    // Build the IO vectors to perform the read
-    struct iovec vectors[2];
-    int num_vectors;
-    circbuf_setup_readv_iovec(&conn->input, (struct iovec*)&vectors, &num_vectors);
+        // Build the IO vectors to perform the read
+        struct iovec vectors[2];
+        int num_vectors;
+        circbuf_setup_readv_iovec(&conn->input, (struct iovec*)&vectors, &num_vectors);
 
-    /*
-     * Issue the read, always use the first vector.
-     * since we just cleared the buffer, and it should
-     * be a contiguous buffer.
-     */
-    assert(num_vectors == 1);
-    ssize_t read_bytes = recv(watch->fd, vectors[0].iov_base,
-                                vectors[0].iov_len, 0);
+        /*
+         * Issue the read, always use the first vector.
+         * since we just cleared the buffer, and it should
+         * be a contiguous buffer.
+         */
+        assert(num_vectors == 1);
+        ssize_t read_bytes = recv(watch->fd, vectors[0].iov_base,
+                                    vectors[0].iov_len, 0);
 
-    // Make sure we actually read something
-    if (read_bytes == 0) {
-        syslog(LOG_DEBUG, "Got empty UDP packet. [%d]\n", watch->fd);
-        return;
+        // Make sure we actually read something
+        if (read_bytes == 0) {
+            syslog(LOG_DEBUG, "Got empty UDP packet. [%d]\n", watch->fd);
+            return;
 
-    } else if (read_bytes == -1) {
-        if (errno != EAGAIN && errno != EINTR) {
-            syslog(LOG_ERR, "Failed to recv() from connection [%d]! %s.",
-                    watch->fd, strerror(errno));
+        } else if (read_bytes == -1) {
+            if (errno != EAGAIN && errno != EINTR) {
+                syslog(LOG_ERR, "Failed to recv() from connection [%d]! %s.",
+                        watch->fd, strerror(errno));
+            }
+            return;
         }
-        return;
+
+        // Update the write cursor
+        circbuf_advance_write(&conn->input, read_bytes);
+
+        // UDP clients don't need to append newlines to the messages like
+        // TCP clients do, but our parser requires them.  Append one if
+        // it's not present.
+        if (conn->input.buffer[conn->input.write_cursor - 1] != '\n')
+            circbuf_write(&conn->input, "\n", 1);
+
+        // Get the user data
+        worker_ev_userdata *data = ev_userdata();
+
+        // Invoke the connection handler
+        statsite_conn_handler handle = {data->netconf->config, watch->data};
+        handle_client_connect(&handle);
     }
-
-    // Update the write cursor
-    circbuf_advance_write(&conn->input, read_bytes);
-
-    // UDP clients don't need to append newlines to the messages like
-    // TCP clients do, but our parser requires them.  Append one if
-    // it's not present.
-    if (conn->input.buffer[conn->input.write_cursor - 1] != '\n')
-        circbuf_write(&conn->input, "\n", 1);
-
-    // Get the user data
-    worker_ev_userdata *data = ev_userdata();
-
-    // Invoke the connection handler
-    statsite_conn_handler handle = {data->netconf->config, watch->data};
-    handle_client_connect(&handle);
 }
 
 
@@ -476,10 +526,18 @@ void enter_networking_loop(statsite_networking *netconf, int *should_run) {
  */
 int shutdown_networking(statsite_networking *netconf) {
     // Stop listening for new connections
-    ev_io_stop(&netconf->tcp_client);
-    close(netconf->tcp_client.fd);
-    ev_io_stop(&netconf->udp_client);
-    close(netconf->udp_client.fd);
+    if ev_is_active(&netconf->tcp_client) {
+        ev_io_stop(&netconf->tcp_client);
+        close(netconf->tcp_client.fd);
+    }
+    if ev_is_active(&netconf->udp_client) {
+        ev_io_stop(&netconf->udp_client);
+        close(netconf->udp_client.fd);
+    }
+    if (netconf->stdin_client != NULL) {
+        close_client_connection(netconf->stdin_client);
+        netconf->stdin_client = NULL;
+    }
 
     // Stop the other timers
     ev_timer_stop(&netconf->flush_timer);

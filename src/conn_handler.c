@@ -14,10 +14,12 @@
 /*
  * Binary defines
  */
-#define BIN_TYPE_KV      0x1
-#define BIN_TYPE_COUNTER 0x2
-#define BIN_TYPE_TIMER   0x3
-#define BIN_TYPE_SET     0x4
+#define BIN_TYPE_KV             0x1
+#define BIN_TYPE_COUNTER        0x2
+#define BIN_TYPE_TIMER          0x3
+#define BIN_TYPE_SET            0x4
+#define BIN_TYPE_GAUGE          0x5
+#define BIN_TYPE_GAUGE_DELTA    0x6
 
 #define BIN_OUT_NO_TYPE 0x0
 #define BIN_OUT_SUM     0x1
@@ -86,6 +88,10 @@ static int stream_formatter(FILE *pipe, void *data, metric_type type, char *name
             STREAM("kv.%s|%f|%lld\n", name, *(double*)value);
             break;
 
+        case GAUGE:
+            STREAM("gauges.%s|%f|%lld\n", name, ((gauge_t*)value)->value);
+            break;
+
         case COUNTER:
             STREAM("counts.%s|%f|%lld\n", name, counter_sum(value));
             break;
@@ -152,6 +158,10 @@ static int stream_formatter_bin(FILE *pipe, void *data, metric_type type, char *
     switch (type) {
         case KEY_VAL:
             STREAM_BIN(BIN_TYPE_KV, BIN_OUT_NO_TYPE, *(double*)value);
+            break;
+
+        case GAUGE:
+            STREAM_BIN(BIN_TYPE_GAUGE, BIN_OUT_NO_TYPE, ((gauge_t*)value)->value);
             break;
 
         case COUNTER:
@@ -345,8 +355,19 @@ static int handle_ascii_client_connect(statsite_conn_handler *handle) {
                 type = TIMER;
                 break;
             case 'k':
-            case 'g':
                 type = KEY_VAL;
+                break;
+            case 'g':
+                type = GAUGE;
+
+                // Check if this is a delta update
+                switch (*val_str) {
+                    case '+':
+                        // Advance past the + to avoid breaking str2double
+                        val_str++;
+                    case '-':
+                        type = GAUGE_DELTA;
+                }
                 break;
             case 's':
                 type = SET;
@@ -479,6 +500,12 @@ static int handle_binary_client_connect(statsite_conn_handler *handle) {
                 break;
             case BIN_TYPE_TIMER:
                 type = TIMER;
+                break;
+            case BIN_TYPE_GAUGE:
+                type = GAUGE;
+                break;
+            case BIN_TYPE_GAUGE_DELTA:
+                type = GAUGE_DELTA;
                 break;
 
             // Special case set handling
