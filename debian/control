@@ -2,7 +2,7 @@ Source: statsite
 Section: admin
 Priority: extra
 Maintainer: Jeremy Grosser <jeremy@synack.me>
-Build-Depends: debhelper (>= 8.0.0), scons, python-support
+Build-Depends: debhelper (>= 8.0.0), scons, python-support, check
 Standards-Version: 3.9.3
 Homepage: https://github.com/armon/statsite
 
